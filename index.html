@@ -4,47 +4,82 @@
 <meta charset="UTF-8">
 <title>Face Unlock (face-api.js)</title>
 <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+
 <style>
-body { background:#111; color:white; font-family:sans-serif; text-align:center; }
-#video { width:320px; border:2px solid #333; margin-top:20px; }
-#unlocked { font-size:40px; margin-top:20px; color:#0f0; display:none; }
-button { padding:10px 20px; font-size:16px; margin-top:20px; }
+body {
+  background:#111;
+  color:white;
+  font-family:sans-serif;
+  text-align:center;
+  transition: background 0.4s;
+}
+
+#video {
+  width:320px;
+  border:2px solid #333;
+  margin-top:20px;
+}
+
+button {
+  padding:10px 20px;
+  font-size:16px;
+  margin-top:20px;
+}
+
+/* 📌 右下モーダル */
+#modal {
+  position:fixed;
+  bottom:20px;
+  right:20px;
+  background:#333;
+  padding:15px 20px;
+  border-radius:10px;
+  font-size:18px;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.4s;
+}
+#modal.show {
+  opacity:1;
+}
+
 </style>
 </head>
 <body>
 
 <h1>Face Unlock</h1>
 
-<button id="startBtn">カメラを開始</button><br>
+<button id="startCamBtn">カメラを開始</button><br>
 <video id="video" autoplay muted playsinline></video>
 
 <p id="status"></p>
 
-<button id="registerBtn" style="display:none;">この顔を登録する</button>
+<button id="registerBtn" style="display:none;">
+  この顔を登録する
+</button>
 
-<div id="unlocked">UNLOCKED!</div>
+<button id="startAuthBtn" style="display:none;">
+  認証開始
+</button>
+
+<div id="modal">登録が完了しました！</div>
 
 <script>
 let registeredDescriptor = null;
+let recognitionRunning = false;
 
-// ----------------------------
 // モデル読み込み
-// ----------------------------
 async function loadModels() {
     document.getElementById("status").innerText = "モデル読み込み中...";
-
     await faceapi.nets.tinyFaceDetector.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
     await faceapi.nets.faceRecognitionNet.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
     await faceapi.nets.faceLandmark68Net.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
-
     document.getElementById("status").innerText = "モデル読み込み完了";
 }
 loadModels();
 
-// ----------------------------
-// カメラ開始（ユーザー操作が必要）
-// ----------------------------
-document.getElementById("startBtn").onclick = async () => {
+// カメラ起動（ボタン必須）
+document.getElementById("startCamBtn").onclick = async () => {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         document.getElementById("video").srcObject = stream;
@@ -52,42 +87,47 @@ document.getElementById("startBtn").onclick = async () => {
         document.getElementById("status").innerText = "カメラ起動OK ✔";
         document.getElementById("registerBtn").style.display = "inline-block";
     } catch (err) {
-        document.getElementById("status").innerText = "カメラエラー: " + err.name;
-        console.error(err);
+        document.getElementById("status").innerText = "エラー: " + err.name;
     }
 };
 
-// ----------------------------
 // 顔登録
-// ----------------------------
 document.getElementById("registerBtn").onclick = async () => {
     const video = document.getElementById("video");
-
     const detection = await faceapi
         .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
         .withFaceLandmarks()
         .withFaceDescriptor();
 
     if (!detection) {
-        alert("顔が検出されません。もう一度。");
+        alert("顔が見つかりません。正面を向いてください。");
         return;
     }
 
     registeredDescriptor = detection.descriptor;
 
-    alert("顔を登録しました！認証を開始します。");
+    // 📌 右下モーダル表示
+    const modal = document.getElementById("modal");
+    modal.classList.add("show");
+    setTimeout(() => modal.classList.remove("show"), 2500);
+
+    document.getElementById("startAuthBtn").style.display = "inline-block";
+};
+
+// 認証開始
+document.getElementById("startAuthBtn").onclick = () => {
+    recognitionRunning = true;
+    document.getElementById("status").innerText = "認証中...";
     runRecognition();
 };
 
-// ----------------------------
 // 認証ループ
-// ----------------------------
 async function runRecognition() {
     const video = document.getElementById("video");
     const THRESHOLD = 0.45;
 
     setInterval(async () => {
-        if (!registeredDescriptor) return;
+        if (!recognitionRunning || !registeredDescriptor) return;
 
         const detection = await faceapi
             .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
@@ -103,8 +143,9 @@ async function runRecognition() {
 
         console.log("distance:", distance);
 
+        // 📌 一致したら背景を青にする
         if (distance < THRESHOLD) {
-            document.getElementById("unlocked").style.display = "block";
+            document.body.style.background = "#0066ff";
         }
 
     }, 200);
