@@ -1,155 +1,110 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Face Unlock (face-api.js)</title>
+<title>Face Unlock</title>
 <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
-
 <style>
-body {
-  background:#111;
-  color:white;
-  font-family:sans-serif;
-  text-align:center;
-  transition: background 0.4s;
-}
-
-#video {
-  width:320px;
-  border:2px solid #333;
-  margin-top:20px;
-}
-
-button {
-  padding:10px 20px;
-  font-size:16px;
-  margin-top:20px;
-}
-
-/* 📌 右下モーダル */
-#modal {
-  position:fixed;
-  bottom:20px;
-  right:20px;
-  background:#333;
-  padding:15px 20px;
-  border-radius:10px;
-  font-size:18px;
-  opacity:0;
-  pointer-events:none;
-  transition:opacity 0.4s;
-}
-#modal.show {
-  opacity:1;
-}
-
+  body { font-family: sans-serif; background: #222; color: #fff; text-align:center; }
+  video { width: 320px; border: 2px solid #fff; margin-top: 20px; }
+  #status { margin-top: 10px; font-size: 18px; }
+  #registeredModal {
+      position: fixed; right:20px; bottom:20px;
+      background:#0af; color:#fff; padding:10px 15px;
+      border-radius:8px; display:none;
+  }
 </style>
 </head>
 <body>
 
 <h1>Face Unlock</h1>
 
-<button id="startCamBtn">カメラを開始</button><br>
-<video id="video" autoplay muted playsinline></video>
+<button id="loadBtn">モデル読み込み</button>
+<button id="registerBtn">顔登録</button>
+<button id="authBtn">認証開始</button>
 
-<p id="status"></p>
+<br>
+<video id="video" autoplay muted></video>
+<canvas id="canvas"></canvas>
+<div id="status">待機中</div>
 
-<button id="registerBtn" style="display:none;">
-  この顔を登録する
-</button>
-
-<button id="startAuthBtn" style="display:none;">
-  認証開始
-</button>
-
-<div id="modal">登録が完了しました！</div>
+<div id="registeredModal">登録完了！</div>
 
 <script>
+const MODEL_URL = "https://hc0t48ah6n.github.io/face_unlock/weights/";
 let registeredDescriptor = null;
-let recognitionRunning = false;
 
-// モデル読み込み
-async function loadModels() {
-    document.getElementById("status").innerText = "モデル読み込み中...";
-    await faceapi.nets.tinyFaceDetector.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
-    await faceapi.nets.faceRecognitionNet.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
-    await faceapi.nets.faceLandmark68Net.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
-    document.getElementById("status").innerText = "モデル読み込み完了";
-}
-loadModels();
+document.getElementById("loadBtn").onclick = async () => {
+    document.getElementById("status").innerText = "モデル読み込み中…";
 
-// カメラ起動（ボタン必須）
-document.getElementById("startCamBtn").onclick = async () => {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        document.getElementById("video").srcObject = stream;
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+    await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
 
-        document.getElementById("status").innerText = "カメラ起動OK ✔";
-        document.getElementById("registerBtn").style.display = "inline-block";
-    } catch (err) {
-        document.getElementById("status").innerText = "エラー: " + err.name;
-    }
+    document.getElementById("status").innerText = "モデル読み込み完了！";
 };
 
-// 顔登録
 document.getElementById("registerBtn").onclick = async () => {
+    document.getElementById("status").innerText = "カメラ起動中…";
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
     const video = document.getElementById("video");
-    const detection = await faceapi
-        .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+    video.srcObject = stream;
+
+    await new Promise(resolve => video.onloadedmetadata = resolve);
+
+    document.getElementById("status").innerText = "顔を登録しています…";
+
+    const det = await faceapi
+        .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-    if (!detection) {
-        alert("顔が見つかりません。正面を向いてください。");
+    if (!det) {
+        document.getElementById("status").innerText = "顔が検出できませんでした";
         return;
     }
 
-    registeredDescriptor = detection.descriptor;
+    registeredDescriptor = det.descriptor;
 
-    // 📌 右下モーダル表示
-    const modal = document.getElementById("modal");
-    modal.classList.add("show");
-    setTimeout(() => modal.classList.remove("show"), 2500);
+    document.getElementById("registeredModal").style.display = "block";
+    setTimeout(() => {
+        document.getElementById("registeredModal").style.display = "none";
+    }, 2000);
 
-    document.getElementById("startAuthBtn").style.display = "inline-block";
+    document.getElementById("status").innerText = "登録完了！";
 };
 
-// 認証開始
-document.getElementById("startAuthBtn").onclick = () => {
-    recognitionRunning = true;
-    document.getElementById("status").innerText = "認証中...";
-    runRecognition();
-};
+document.getElementById("authBtn").onclick = () => {
+    if (!registeredDescriptor) {
+        document.getElementById("status").innerText = "先に顔を登録してください";
+        return;
+    }
 
-// 認証ループ
-async function runRecognition() {
     const video = document.getElementById("video");
-    const THRESHOLD = 0.45;
 
-    setInterval(async () => {
-        if (!recognitionRunning || !registeredDescriptor) return;
-
-        const detection = await faceapi
-            .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+    async function loop() {
+        const det = await faceapi
+            .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
             .withFaceLandmarks()
             .withFaceDescriptor();
 
-        if (!detection) return;
-
-        const distance = faceapi.euclideanDistance(
-            registeredDescriptor,
-            detection.descriptor
-        );
-
-        console.log("distance:", distance);
-
-        // 📌 一致したら背景を青にする
-        if (distance < THRESHOLD) {
-            document.body.style.background = "#0066ff";
+        if (det) {
+            const dist = faceapi.euclideanDistance(registeredDescriptor, det.descriptor);
+            if (dist < 0.45) {
+                document.body.style.background = "#0044ff";
+                document.getElementById("status").innerText = "認証成功！";
+            } else {
+                document.body.style.background = "#222";
+                document.getElementById("status").innerText = "一致せず…";
+            }
         }
 
-    }, 200);
-}
+        requestAnimationFrame(loop);
+    }
+
+    loop();
+};
 </script>
 
 </body>
