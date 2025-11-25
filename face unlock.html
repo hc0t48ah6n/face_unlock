@@ -1,300 +1,188 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html>
 <head>
-<meta charset="utf-8" />
-<title>Face Unlock (file:// 完全対応)</title>
+<meta charset="UTF-8">
+<title>Face Unlock</title>
 <style>
-  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN"; padding:20px; }
-  #controls { display:flex; gap:8px; margin-bottom:10px; }
-  video, canvas { border:1px solid #222; border-radius:6px; }
-  #toast {
-    position: fixed; bottom: 20px; right: 20px;
-    background: rgba(30,30,30,0.9); color: #fff; padding:12px 16px; border-radius:8px;
-    opacity: 0; transition: opacity .3s; pointer-events: none;
-  }
-  #overlay {
-    position:absolute; left:0; top:0; pointer-events:none;
-  }
-  #status { margin-top:10px; }
-  #unlockBanner {
-    position: fixed; top:0; left:0; right:0; padding:12px; text-align:center; font-weight:700;
-    display:none;
-  }
+body { background:#111; color:white; font-family:sans-serif; text-align:center; }
+#video { width:320px; border:2px solid #444; margin-top:20px; }
+#canvasOutput { display:none; }
+#msg {
+    position:fixed; right:10px; bottom:10px; background:#0a0; padding:10px 20px;
+    border-radius:10px; display:none; color:white;
+}
+#unlocked {
+    font-size:40px; margin-top:20px; color:#0f0; display:none;
+}
 </style>
 </head>
+
 <body>
+<h1>Face Unlock</h1>
 
-<h2>Face Unlock（本人のみ / file:// 対応）</h2>
+<video id="video" autoplay playsinline></video>
+<br>
+<button id="captureBtn">撮影（10枚中の1枚）</button>
+<p id="count">学習用撮影：0 / 10</p>
 
-<div id="controls">
-  <button id="startCam">カメラ開始</button>
-  <button id="enrollBtn">Enroll（10枚自動撮影）</button>
-  <button id="resetEnroll">登録リセット</button>
-</div>
+<div id="unlocked">Unlocked!</div>
 
-<div style="position:relative; display:inline-block;">
-  <video id="video" width="320" height="240" autoplay muted></video>
-  <canvas id="canvas" width="320" height="240"></canvas>
-</div>
+<canvas id="canvasOutput"></canvas>
+<div id="msg">保存完了！</div>
 
-<p id="status">状態：準備待ち（まず「カメラ開始」）</p>
-
-<div id="toast">通知</div>
-<div id="unlockBanner" style="background:#0a0; color:#fff;">Unlocked! リダイレクトしています…</div>
-
-<!-- OpenCV.js を同フォルダに置く -->
-<script src="opencv.js" onload="onOpenCvReady();"></script>
+<script src="opencv.js" onload="onOpenCvReady()"></script>
 
 <script>
-/* ------------------------------
-  — 設定（あなたの指定）
-  ------------------------------ */
-const ENROLL_COUNT = 10;      // 撮影枚数
-const CAPTURE_INTERVAL = 500; // ms
-const CONF_THRESHOLD = 80;    // <= 80 で本人と判定
-const REDIRECT_URL = 'home.html'; // 認証成功時に開くファイル（同フォルダ）
+let video = document.getElementById("video");
+let cap;
+let classifier;
+let recognizer;
+let trainingImages = [];
+let trainingLabels = [];
+let captureCount = 0;
+let TRAIN_MAX = 10;   // ← あなたの設定
+let THRESHOLD = 80;   // ← あなたの設定（これより小さいと本人）
+let isTrained = false;
 
-/* ------------------------------
-  — 埋め込みカスケード（Base64）
-  （軽量化のため最小例のbase64を使用。必要なら実運用で正式cascadeに差替え）
-  ------------------------------ */
-const cascadeBase64 = `
-PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4NCjwhLS0gRXhhbXBs
-ZSBjYXNjYWRlIC0gdG8gZGVtbw0KLS0+DQogIDxjYXNjYWRlcz4NCiAgICA8Y2FzY2Fk
-ZSBuYW1lPSJkZW1vIj4NCiAgICAgIDxmZWF0dXJlQ29sbGVjdGlvbj4NCiAgICAgICA8
-ZmVhdHVyZSB4PSIxIiB5PSIxIiB3aWR0aD0iMSIgaGVpZ2h0PSIxIi8+DQogICAgICA8
-L2ZlYXR1cmVDb2xsZWN0aW9uPg0KICAgIDwvZmVhdHVyZT4NCiAgICA8b3B0aW9ucz4N
-CiAgICAgIDxzY2FsZUZhY3Rvcj4xLjE8L3NjYWxlRmFjdG9yPg0KICAgIDwvb3B0aW9u
-cz4NCiAgICA8c2lnbmF0dXJlPg0KICAgICAgPHNpZ25hdHVyZT4wPC9zaWduYXR1cmU+
-DQogICAgPC9zaWduYXR1cmU+DQogIDwvY2FzY2FkZT4NCiA8L2Nhc2NhZGVzPg0K
-`;
-
-/* decode base64 -> string */
-function decodeCascadeText(b64) {
-  return atob(b64.replace(/\s+/g,''));
-}
-
-/* ------------------------------
-  — グローバル変数
-  ------------------------------ */
-let video = null, canvas = null, ctx = null, cap = null;
-let classifier = null, recognizer = null;
-let trainImgs = [], trainLabels = [];
-let enrolling = false;
-
-/* UI helper */
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.opacity = 1;
-  clearTimeout(t._t);
-  t._t = setTimeout(()=> t.style.opacity = 0, 2000);
-}
-
-/* OpenCV 初期化（script の onload で呼ばれる） */
+// ----------------------------
+// OpenCV が読み込まれた時
+// ----------------------------
 function onOpenCvReady() {
-  document.getElementById('status').innerText = 'OpenCV.js 読込完了';
-  // CascadeClassifier を準備（FS に書き込んでから load）
-  classifier = new cv.CascadeClassifier();
-
-  const xmlText = decodeCascadeText(cascadeBase64);
-  // FS にファイルを作成（Emscripten の仮想ファイルシステム）
-  cv.FS_createDataFile('/', 'cascade.xml', xmlText, true, false, false);
-  const ok = classifier.load('cascade.xml');
-  if (!ok) {
-    document.getElementById('status').innerText = 'カスケード読み込み失敗';
-    console.error('cascade load failed');
-    alert('カスケードの読み込みに失敗しました');
-    return;
-  }
-
-  recognizer = new cv.LBPHFaceRecognizer();
-  document.getElementById('status').innerText = '準備完了。カメラ開始してください。';
+    console.log("OpenCV.js Loaded!");
+    startCamera();
+    loadCascade();
 }
 
-/* カメラ開始 */
-document.getElementById('startCam').addEventListener('click', async () => {
-  if (!cv || !cv.VideoCapture) {
-    alert('OpenCV がまだ読み込まれていません。ページを再読み込みしてください。');
-    return;
-  }
-  video = document.getElementById('video');
-  canvas = document.getElementById('canvas');
-  ctx = canvas.getContext('2d');
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    video.srcObject = stream;
-    await video.play();
-    cap = new cv.VideoCapture(video);
-    requestAnimationFrame(drawLoop);
-    showToast('カメラ開始');
-    document.getElementById('status').innerText = 'カメラ動作中。Enroll で登録開始。';
-  } catch (e) {
-    alert('カメラを開けません: ' + e.message);
-  }
-});
-
-/* ビデオ描画ループ（顔枠を表示） */
-function drawLoop() {
-  if (!video || video.paused) { requestAnimationFrame(drawLoop); return; }
-  let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-  let gray = new cv.Mat();
-  cap.read(src);
-  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-  let faces = new cv.RectVector();
-  try {
-    classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
-  } catch (e) {
-    // classifier が未定義の場合に備える（通常はここに来ない）
-    console.error(e);
-  }
-
-  // 描画
-  ctx.drawImage(video, 0, 0);
-  if (faces.size() > 0) {
-    const r = faces.get(0);
-    ctx.strokeStyle = 'red';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(r.x, r.y, r.width, r.height);
-  }
-
-  src.delete(); gray.delete(); faces.delete();
-  requestAnimationFrame(drawLoop);
+// ----------------------------
+// カメラ開始
+// ----------------------------
+function startCamera() {
+    navigator.mediaDevices.getUserMedia({ video:true }).then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+            video.play();
+            cap = new cv.VideoCapture(video);
+            requestAnimationFrame(drawLoop);
+        };
+    });
 }
 
-/* Enroll（自動で ENROLL_COUNT 枚撮影して学習） */
-document.getElementById('enrollBtn').addEventListener('click', async () => {
-  if (!cap) { alert('先にカメラを開始してください'); return; }
-  if (!classifier) { alert('まだ初期化されていません'); return; }
-  if (enrolling) { alert('既に登録中です'); return; }
+// ----------------------------
+// ここで GitHub の XML を読み込む！
+// ----------------------------
+async function loadCascade() {
+    const url = "https://raw.githubusercontent.com/hc0t48ah6n/face_unlock/main/haarcascade_frontalface_default.xml";
+    
+    let res = await fetch(url);
+    let xmlText = await res.text();
 
-  enrolling = true;
-  trainImgs = []; trainLabels = [];
-  showToast('登録開始: ' + ENROLL_COUNT + ' 枚を自動撮影します');
+    cv.FS_createDataFile("/", "face.xml", xmlText, true, false);
 
-  for (let i=0;i<ENROLL_COUNT;i++) {
-    // キャプチャ
-    const ok = captureOne(); // 成功したら true
-    if (ok) {
-      showToast('保存完了！ (' + (trainImgs.length) + ' 枚目)');
+    classifier = new cv.CascadeClassifier();
+    let ok = classifier.load("face.xml");
+
+    if(!ok){
+        console.error("Cascade load failed!!!!");
     } else {
-      showToast('顔が見つかりませんでした (' + (i+1) + ')');
+        console.log("Cascade loaded OK");
     }
-    // wait
-    await new Promise(r => setTimeout(r, CAPTURE_INTERVAL));
-  }
-
-  // 学習
-  if (trainImgs.length === 0) {
-    alert('有効な学習画像が1枚も得られませんでした。もう一度やってください。');
-    enrolling = false;
-    return;
-  }
-  recognizer.train(trainImgs, trainLabels);
-  showToast('モデル学習完了');
-  document.getElementById('status').innerText = '学習完了。認証を開始します';
-
-  // 認証ループ開始
-  enrolling = false;
-  requestAnimationFrame(recognizeLoop);
-});
-
-/* 1枚キャプチャして trainImgs に追加する（顔が見つからなければ false） */
-function captureOne() {
-  if (!cap) return false;
-  let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-  let gray = new cv.Mat();
-  cap.read(src);
-  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-  let faces = new cv.RectVector();
-  classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
-
-  if (faces.size() > 0) {
-    const r = faces.get(0);
-    let face = gray.roi(r);
-    let resized = new cv.Mat();
-    cv.resize(face, resized, new cv.Size(100,100)); // LBPH 用に統一
-    trainImgs.push(resized.clone());
-    trainLabels.push(1);
-    // 清掃：roi と resized は clone 前後で delete
-    resized.delete();
-    face.delete();
-
-    src.delete(); gray.delete(); faces.delete();
-    return true;
-  } else {
-    src.delete(); gray.delete(); faces.delete();
-    return false;
-  }
 }
 
-/* 登録リセット（セッション内の学習データを消す） */
-document.getElementById('resetEnroll').addEventListener('click', () => {
-  trainImgs.forEach(m => m.delete());
-  trainImgs = []; trainLabels = [];
-  showToast('登録リセットしました');
-  document.getElementById('status').innerText = '登録データをリセットしました';
-});
+// ----------------------------
+// 顔検出・認証ループ
+// ----------------------------
+function drawLoop() {
 
-/* 認証ループ */
-function recognizeLoop() {
-  if (!cap) { requestAnimationFrame(recognizeLoop); return; }
-
-  let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-  let gray = new cv.Mat();
-  cap.read(src);
-  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-  let faces = new cv.RectVector();
-  classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
-
-  ctx.drawImage(video, 0, 0);
-  if (faces.size() > 0) {
-    const r = faces.get(0);
-    ctx.strokeStyle = 'lime';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(r.x, r.y, r.width, r.height);
-
-    let face = gray.roi(r);
-    let resized = new cv.Mat();
-    cv.resize(face, resized, new cv.Size(100,100));
-
-    try {
-      const res = recognizer.predict(resized);
-      // res: {label: int, confidence: float}
-      ctx.fillStyle = 'yellow';
-      ctx.font = '16px sans-serif';
-      ctx.fillText('conf: ' + Math.round(res.confidence), 8, 230);
-
-      if (res.confidence <= CONF_THRESHOLD) {
-        // UNLOCK!
-        document.getElementById('unlockBanner').style.display = 'block';
-        showToast('認証成功！リダイレクトします');
-        // 少し待ってから遷移（1s）
-        setTimeout(()=> {
-          // 同フォルダ内のファイルを開く
-          window.location.href = REDIRECT_URL;
-        }, 1000);
-
-        // 解放
-        resized.delete(); face.delete();
-        src.delete(); gray.delete(); faces.delete();
-        return; // 移動して終了
-      }
-    } catch (e) {
-      console.error('predict error', e);
+    if (!classifier) {
+        requestAnimationFrame(drawLoop);
+        return;
     }
 
-    resized.delete(); face.delete();
-  }
+    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+    let gray = new cv.Mat();
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-  src.delete(); gray.delete(); faces.delete();
-  requestAnimationFrame(recognizeLoop);
+    let faces = new cv.RectVector();
+    classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
+
+    if (faces.size() > 0) {
+        let face = faces.get(0);
+
+        if(isTrained){
+            // 認証！
+            let faceMat = gray.roi(face);
+            let result = recognizer.predict(faceMat);
+            faceMat.delete();
+
+            console.log("confidence:", result.confidence);
+
+            if(result.confidence < THRESHOLD){
+                document.getElementById("unlocked").style.display="block";
+            }
+        }
+    }
+
+    src.delete(); gray.delete(); faces.delete();
+    requestAnimationFrame(drawLoop);
 }
 
+// ----------------------------
+// 撮影ボタン
+// ----------------------------
+document.getElementById("captureBtn").onclick = () => {
+    if (captureCount >= TRAIN_MAX) return;
+
+    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+    let gray = new cv.Mat();
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let faces = new cv.RectVector();
+    classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
+
+    if (faces.size() > 0) {
+        let face = faces.get(0);
+        let faceMat = gray.roi(face);
+
+        trainingImages.push(faceMat.clone());
+        trainingLabels.push(0);
+
+        faceMat.delete();
+        captureCount++;
+
+        document.getElementById("count").innerText =
+            `学習用撮影：${captureCount} / ${TRAIN_MAX}`;
+
+        showMsg();
+    }
+
+    src.delete(); gray.delete(); faces.delete();
+
+    if(captureCount === TRAIN_MAX){
+        trainModel();
+    }
+};
+
+// ----------------------------
+// LBPH で本人モデルを作成
+// ----------------------------
+function trainModel() {
+    recognizer = new cv.LBPHFaceRecognizer();
+    recognizer.train(trainingImages, trainingLabels);
+    isTrained = true;
+    console.log("Training completed!");
+}
+
+// ----------------------------
+// 右下メッセージ表示
+// ----------------------------
+function showMsg(){
+    let m = document.getElementById("msg");
+    m.style.display = "block";
+    setTimeout(()=>{ m.style.display="none"; }, 1200);
+}
 </script>
+
 </body>
 </html>
