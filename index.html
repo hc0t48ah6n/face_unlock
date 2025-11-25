@@ -1,186 +1,187 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Face Unlock</title>
+<title>OpenCV.js 顔認証（自動保存通知付き）</title>
 <style>
-body { background:#111; color:white; font-family:sans-serif; text-align:center; }
-#video { width:320px; border:2px solid #444; margin-top:20px; }
-#canvasOutput { display:none; }
-#msg {
-    position:fixed; right:10px; bottom:10px; background:#0a0; padding:10px 20px;
-    border-radius:10px; display:none; color:white;
-}
-#unlocked {
-    font-size:40px; margin-top:20px; color:#0f0; display:none;
-}
+  body { font-family: sans-serif; padding: 20px; }
+  video, canvas { border:1px solid #333; border-radius:4px; }
+
+  /* ---- 通知ポップアップ ---- */
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(30, 30, 30, 0.9);
+    color: #fff;
+    padding: 12px 18px;
+    border-radius: 8px;
+    opacity: 0;
+    transition: opacity .5s;
+    pointer-events: none;
+  }
 </style>
 </head>
-
 <body>
-<h1>Face Unlock</h1>
 
-<video id="video" autoplay playsinline></video>
-<br>
-<button id="captureBtn">撮影（10枚中の1枚）</button>
-<p id="count">学習用撮影：0 / 10</p>
+<h2>OpenCV.js 顔認証（撮影→自動変換→モデル学習）</h2>
 
-<div id="unlocked">Unlocked!</div>
+<button id="startCam">カメラ開始</button>
+<button id="autoAdd">撮影して自動学習</button>
+<button id="trainModel">モデル学習</button>
 
-<canvas id="canvasOutput"></canvas>
-<div id="msg">保存完了！</div>
+<br><br>
 
-<script src="opencv.js" onload="onOpenCvReady()"></script>
+<video id="video" width="320" height="240" autoplay muted></video>
+<canvas id="canvas" width="320" height="240"></canvas>
+
+<p id="status">状態：待機中</p>
+
+<div id="toast">保存しました</div>
+
+<script async src="opencv.js" onload="onOpenCvReady();"></script>
 
 <script>
 let video = document.getElementById("video");
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+
 let cap;
 let classifier;
 let recognizer;
-let trainingImages = [];
-let trainingLabels = [];
-let captureCount = 0;
-let TRAIN_MAX = 10;   // ← あなたの設定
-let THRESHOLD = 80;   // ← あなたの設定（これより小さいと本人）
-let isTrained = false;
 
-// ----------------------------
-// OpenCV が読み込まれた時
-// ----------------------------
+let trainImgs = [];     // 学習画像
+let trainLabels = [];   // ラベル
+
+function showToast(msg) {
+    let t = document.getElementById("toast");
+    t.textContent = msg;
+    t.style.opacity = 1;
+    setTimeout(() => { t.style.opacity = 0; }, 2000);
+}
+
 function onOpenCvReady() {
-    console.log("OpenCV.js Loaded!");
-    startCamera();
-    loadCascade();
-}
-
-// ----------------------------
-// カメラ開始
-// ----------------------------
-function startCamera() {
-    navigator.mediaDevices.getUserMedia({ video:true }).then(stream => {
-        video.srcObject = stream;
-        video.onloadedmetadata = () => {
-            video.play();
-            cap = new cv.VideoCapture(video);
-            requestAnimationFrame(drawLoop);
-        };
-    });
-}
-
-// ----------------------------
-// ここで GitHub の XML を読み込む！
-// ----------------------------
-async function loadCascade() {
-    const url = "https://raw.githubusercontent.com/hc0t48ah6n/face_unlock/main/haarcascade_frontalface_default.xml";
-    
-    let res = await fetch(url);
-    let xmlText = await res.text();
-
-    cv.FS_createDataFile("/", "face.xml", xmlText, true, false);
+    document.getElementById("status").innerText = "OpenCV.js 読み込み完了";
 
     classifier = new cv.CascadeClassifier();
-    let ok = classifier.load("face.xml");
+    classifier.load('haarcascade_frontalface_default.xml');
 
-    if(!ok){
-        console.error("Cascade load failed!!!!");
-    } else {
-        console.log("Cascade loaded OK");
-    }
+    recognizer = new cv.LBPHFaceRecognizer();
 }
 
-// ----------------------------
-// 顔検出・認証ループ
-// ----------------------------
-function drawLoop() {
+document.getElementById("startCam").onclick = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    video.play();
+    cap = new cv.VideoCapture(video);
+    requestAnimationFrame(detectLoop);
+};
 
-    if (!classifier) {
-        requestAnimationFrame(drawLoop);
+function detectLoop() {
+    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+    let gray = new cv.Mat();
+
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let faces = new cv.RectVector();
+    classifier.detectMultiScale(gray, faces, 1.1, 3);
+
+    ctx.drawImage(video, 0, 0);
+    if (faces.size() > 0) {
+        let f = faces.get(0);
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(f.x, f.y, f.width, f.height);
+    }
+
+    src.delete(); gray.delete(); faces.delete();
+    requestAnimationFrame(detectLoop);
+}
+
+document.getElementById("autoAdd").onclick = () => {
+
+    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+    let gray = new cv.Mat();
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let faces = new cv.RectVector();
+    classifier.detectMultiScale(gray, faces, 1.1, 3);
+
+    if (faces.size() > 0) {
+        let f = faces.get(0);
+        let face = gray.roi(f);
+
+        let resized = new cv.Mat();
+        cv.resize(face, resized, new cv.Size(100, 100));
+
+        trainImgs.push(resized.clone());  // clone したものを保存
+        trainLabels.push(1);
+
+        document.getElementById("status").innerText =
+            "学習画像枚数：" + trainImgs.length;
+
+        showToast("保存完了！ (" + trainImgs.length + "枚)");
+
+        resized.delete();
+        face.delete();
+    } else {
+        showToast("顔が認識できませんでした");
+    }
+
+    src.delete(); gray.delete(); faces.delete();
+};
+
+document.getElementById("trainModel").onclick = () => {
+    if (trainImgs.length === 0) {
+        alert("学習画像がありません（撮影してください）");
         return;
     }
 
-    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-    let gray = new cv.Mat();
-    cap.read(src);
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    recognizer.train(trainImgs, trainLabels);
 
-    let faces = new cv.RectVector();
-    classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
+    document.getElementById("status").innerText =
+        "モデル学習完了。認証モードへ";
 
-    if (faces.size() > 0) {
-        let face = faces.get(0);
-
-        if(isTrained){
-            // 認証！
-            let faceMat = gray.roi(face);
-            let result = recognizer.predict(faceMat);
-            faceMat.delete();
-
-            console.log("confidence:", result.confidence);
-
-            if(result.confidence < THRESHOLD){
-                document.getElementById("unlocked").style.display="block";
-            }
-        }
-    }
-
-    src.delete(); gray.delete(); faces.delete();
-    requestAnimationFrame(drawLoop);
-}
-
-// ----------------------------
-// 撮影ボタン
-// ----------------------------
-document.getElementById("captureBtn").onclick = () => {
-    if (captureCount >= TRAIN_MAX) return;
-
-    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-    let gray = new cv.Mat();
-    cap.read(src);
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-    let faces = new cv.RectVector();
-    classifier.detectMultiScale(gray, faces, 1.1, 3, 0);
-
-    if (faces.size() > 0) {
-        let face = faces.get(0);
-        let faceMat = gray.roi(face);
-
-        trainingImages.push(faceMat.clone());
-        trainingLabels.push(0);
-
-        faceMat.delete();
-        captureCount++;
-
-        document.getElementById("count").innerText =
-            `学習用撮影：${captureCount} / ${TRAIN_MAX}`;
-
-        showMsg();
-    }
-
-    src.delete(); gray.delete(); faces.delete();
-
-    if(captureCount === TRAIN_MAX){
-        trainModel();
-    }
+    showToast("モデル学習完了");
+    requestAnimationFrame(recognizeLoop);
 };
 
-// ----------------------------
-// LBPH で本人モデルを作成
-// ----------------------------
-function trainModel() {
-    recognizer = new cv.LBPHFaceRecognizer();
-    recognizer.train(trainingImages, trainingLabels);
-    isTrained = true;
-    console.log("Training completed!");
-}
+function recognizeLoop() {
+    let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+    let gray = new cv.Mat();
 
-// ----------------------------
-// 右下メッセージ表示
-// ----------------------------
-function showMsg(){
-    let m = document.getElementById("msg");
-    m.style.display = "block";
-    setTimeout(()=>{ m.style.display="none"; }, 1200);
+    cap.read(src);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let faces = new cv.RectVector();
+    classifier.detectMultiScale(gray, faces, 1.1, 3);
+
+    ctx.drawImage(video, 0, 0);
+
+    if (faces.size() > 0) {
+        let f = faces.get(0);
+        let face = gray.roi(f);
+
+        let resized = new cv.Mat();
+        cv.resize(face, resized, new cv.Size(100, 100));
+
+        let result = recognizer.predict(resized);
+
+        ctx.fillStyle = "yellow";
+        ctx.font = "20px sans-serif";
+        ctx.fillText(
+            "ID:" + result.label + " | 信頼度:" + result.confidence,
+            10, 220
+        );
+
+        resized.delete();
+        face.delete();
+    }
+
+    src.delete(); gray.delete(); faces.delete();
+    requestAnimationFrame(recognizeLoop);
 }
 </script>
 
