@@ -4,23 +4,33 @@
 <meta charset="UTF-8">
 <title>Face Unlock</title>
 <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+
 <style>
-  body { font-family: sans-serif; background: #222; color: #fff; text-align:center; }
-  video { width: 320px; border: 2px solid #fff; margin-top: 20px; }
-  #status { margin-top: 10px; font-size: 18px; }
+  body { font-family: sans-serif; background:#222; color:#fff; text-align:center; }
+  video { width:300px; border:2px solid #fff; margin-top:20px; }
+  #status { margin-top:10px; font-size:18px; }
   #registeredModal {
       position: fixed; right:20px; bottom:20px;
-      background:#0af; color:#fff; padding:10px 15px;
-      border-radius:8px; display:none;
+      background:#28a745; padding:10px 18px; border-radius:10px;
+      display:none; font-weight:bold;
   }
+  button {
+      margin:6px; padding:10px 18px; font-size:16px;
+      border:none; border-radius:8px; cursor:pointer;
+  }
+  #startCamera { background:#0af; color:#fff; }
+  #takePhoto { background:#ffa500; color:#000; }
+  #authBtn { background:#0f0; color:#000; }
 </style>
 </head>
 <body>
 
 <h1>Face Unlock</h1>
 
-<button id="loadBtn">モデル読み込み</button>
-<button id="registerBtn">顔登録</button>
+<!-- モデルロード & カメラ -->
+<button id="loadModelsBtn">モデル読み込み</button>
+<button id="startCamera">カメラ起動</button>
+<button id="takePhoto">写真撮影（登録）</button>
 <button id="authBtn">認証開始</button>
 
 <br>
@@ -32,9 +42,13 @@
 
 <script>
 const MODEL_URL = "https://hc0t48ah6n.github.io/face_unlock/weights/";
+let video = document.getElementById("video");
 let registeredDescriptor = null;
+let cameraStream = null;
 
-document.getElementById("loadBtn").onclick = async () => {
+
+// 1️⃣ モデル読み込み
+document.getElementById("loadModelsBtn").onclick = async () => {
     document.getElementById("status").innerText = "モデル読み込み中…";
 
     await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
@@ -44,59 +58,79 @@ document.getElementById("loadBtn").onclick = async () => {
     document.getElementById("status").innerText = "モデル読み込み完了！";
 };
 
-document.getElementById("registerBtn").onclick = async () => {
+
+
+// 2️⃣ カメラ起動（許可ダイアログが出る）
+document.getElementById("startCamera").onclick = async () => {
     document.getElementById("status").innerText = "カメラ起動中…";
 
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const video = document.getElementById("video");
-    video.srcObject = stream;
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video:true });
+    video.srcObject = cameraStream;
 
-    await new Promise(resolve => video.onloadedmetadata = resolve);
+    await new Promise(res => video.onloadedmetadata = res);
 
-    document.getElementById("status").innerText = "顔を登録しています…";
+    document.getElementById("status").innerText = "カメラ準備OK。顔を映してください";
+};
 
-    const det = await faceapi
-        .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
-        .withFaceLandmarks()
-        .withFaceDescriptor();
 
-    if (!det) {
-        document.getElementById("status").innerText = "顔が検出できませんでした";
+
+// 3️⃣ 写真撮影 → 自動顔トリミング → モデル登録
+document.getElementById("takePhoto").onclick = async () => {
+    if (!cameraStream) {
+        document.getElementById("status").innerText = "先にカメラを起動してください";
         return;
     }
 
+    document.getElementById("status").innerText = "顔解析中…";
+
+    // 顔検出
+    const det = await faceapi
+      .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!det) {
+        document.getElementById("status").innerText = "顔が見つかりません";
+        return;
+    }
+
+    // 撮影した顔の descriptor 登録
     registeredDescriptor = det.descriptor;
 
-    document.getElementById("registeredModal").style.display = "block";
-    setTimeout(() => {
-        document.getElementById("registeredModal").style.display = "none";
-    }, 2000);
+    // モーダル表示
+    let modal = document.getElementById("registeredModal");
+    modal.style.display = "block";
+    setTimeout(() => modal.style.display = "none", 2500);
 
     document.getElementById("status").innerText = "登録完了！";
 };
 
+
+
+// 4️⃣ 認証開始（背景が青に変わる）
 document.getElementById("authBtn").onclick = () => {
     if (!registeredDescriptor) {
         document.getElementById("status").innerText = "先に顔を登録してください";
         return;
     }
 
-    const video = document.getElementById("video");
+    document.getElementById("status").innerText = "認証開始…";
 
     async function loop() {
         const det = await faceapi
-            .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
-            .withFaceLandmarks()
-            .withFaceDescriptor();
+          .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 320 }))
+          .withFaceLandmarks()
+          .withFaceDescriptor();
 
         if (det) {
             const dist = faceapi.euclideanDistance(registeredDescriptor, det.descriptor);
+
             if (dist < 0.45) {
-                document.body.style.background = "#0044ff";
+                document.body.style.background = "#0044ff";  // 認証成功
                 document.getElementById("status").innerText = "認証成功！";
             } else {
                 document.body.style.background = "#222";
-                document.getElementById("status").innerText = "一致せず…";
+                document.getElementById("status").innerText = "一致しない…";
             }
         }
 
