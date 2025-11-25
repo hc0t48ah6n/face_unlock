@@ -8,68 +8,83 @@
 body { background:#111; color:white; font-family:sans-serif; text-align:center; }
 #video { width:320px; border:2px solid #333; margin-top:20px; }
 #unlocked { font-size:40px; margin-top:20px; color:#0f0; display:none; }
+button { padding:10px 20px; font-size:16px; margin-top:20px; }
 </style>
 </head>
 <body>
 
-<h1>Face Unlock<br><small>face-api.js version</small></h1>
+<h1>Face Unlock</h1>
 
-<video id="video" autoplay muted></video>
-<p id="status">Loading models...</p>
+<button id="startBtn">カメラを開始</button><br>
+<video id="video" autoplay muted playsinline></video>
 
-<button id="registerBtn">この顔を登録する</button>
-<p>（登録すると本人認証が開始）</p>
+<p id="status"></p>
+
+<button id="registerBtn" style="display:none;">この顔を登録する</button>
 
 <div id="unlocked">UNLOCKED!</div>
 
 <script>
+let registeredDescriptor = null;
+
 // ----------------------------
 // モデル読み込み
 // ----------------------------
-Promise.all([
-    faceapi.nets.tinyFaceDetector.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights"),
-    faceapi.nets.faceRecognitionNet.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights"),
-    faceapi.nets.faceLandmark68Net.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights")
-]).then(startVideo);
+async function loadModels() {
+    document.getElementById("status").innerText = "モデル読み込み中...";
 
-// ----------------------------
-// カメラ起動
-// ----------------------------
-function startVideo() {
-    navigator.mediaDevices.getUserMedia({ video: {} })
-    .then(stream => {
-        video.srcObject = stream;
-        document.getElementById("status").innerText = "Ready!";
-    });
+    await faceapi.nets.tinyFaceDetector.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
+    await faceapi.nets.faceRecognitionNet.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
+    await faceapi.nets.faceLandmark68Net.loadFromUri("https://cdn.jsdelivr.net/npm/face-api.js/weights");
+
+    document.getElementById("status").innerText = "モデル読み込み完了";
 }
-
-let registeredDescriptor = null; // ← 登録した顔データ
+loadModels();
 
 // ----------------------------
-// 顔登録ボタン
+// カメラ開始（ユーザー操作が必要）
+// ----------------------------
+document.getElementById("startBtn").onclick = async () => {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        document.getElementById("video").srcObject = stream;
+
+        document.getElementById("status").innerText = "カメラ起動OK ✔";
+        document.getElementById("registerBtn").style.display = "inline-block";
+    } catch (err) {
+        document.getElementById("status").innerText = "カメラエラー: " + err.name;
+        console.error(err);
+    }
+};
+
+// ----------------------------
+// 顔登録
 // ----------------------------
 document.getElementById("registerBtn").onclick = async () => {
+    const video = document.getElementById("video");
+
     const detection = await faceapi
         .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
         .withFaceLandmarks()
         .withFaceDescriptor();
 
     if (!detection) {
-        alert("顔が見つかりません！");
+        alert("顔が検出されません。もう一度。");
         return;
     }
 
     registeredDescriptor = detection.descriptor;
 
-    alert("顔を登録しました！ 認証開始します。");
+    alert("顔を登録しました！認証を開始します。");
     runRecognition();
 };
 
 // ----------------------------
-// 本人認証ループ
+// 認証ループ
 // ----------------------------
 async function runRecognition() {
-    const THRESHOLD = 0.45; // ← これより小さいと本人（0.3〜0.6が適正）
+    const video = document.getElementById("video");
+    const THRESHOLD = 0.45;
 
     setInterval(async () => {
         if (!registeredDescriptor) return;
@@ -81,7 +96,7 @@ async function runRecognition() {
 
         if (!detection) return;
 
-        let distance = faceapi.euclideanDistance(
+        const distance = faceapi.euclideanDistance(
             registeredDescriptor,
             detection.descriptor
         );
